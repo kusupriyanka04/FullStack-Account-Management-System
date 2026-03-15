@@ -4,29 +4,26 @@ import supabase from '../config/supabaseClient.js';
 export const getBalance = async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('users')
+      .from('users1')
       .select('balance, name, email')
       .eq('id', req.user.id)
       .single();
 
-    if (error) {
-      console.error('Balance fetch error:', error);
-      throw error;
-    }
+    if (error) throw error;
 
     res.json(data);
   } catch (err) {
-    console.error('BALANCE ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
 // GET /api/account/statement
+// GET /api/account/statement
 export const getStatement = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Step 1: Fetch transactions
+    // Step 1: Fetch all transactions for this user
     const { data: transactions, error } = await supabase
       .from('transactions')
       .select('*')
@@ -42,7 +39,7 @@ export const getStatement = async (req, res) => {
       return res.json([]);
     }
 
-    // Step 2: Collect unique user IDs
+    // Step 2: Collect all unique user IDs from transactions
     const userIds = [
       ...new Set([
         ...transactions.map((t) => t.sender_id),
@@ -50,7 +47,7 @@ export const getStatement = async (req, res) => {
       ]),
     ];
 
-    // Step 3: Fetch user details
+    // Step 3: Fetch all those users in one query
     const { data: users, error: usersError } = await supabase
       .from('users1')
       .select('id, name, email')
@@ -61,13 +58,13 @@ export const getStatement = async (req, res) => {
       throw usersError;
     }
 
-    // Step 4: Build lookup map
+    // Step 4: Create a lookup map { userId -> user }
     const userMap = {};
     users.forEach((u) => {
       userMap[u.id] = u;
     });
 
-    // Step 5: Enrich transactions with sender/receiver names
+    // Step 5: Attach sender and receiver info to each transaction
     const enriched = transactions.map((tx) => ({
       ...tx,
       sender: userMap[tx.sender_id] || null,
@@ -91,7 +88,7 @@ export const transfer = async (req, res) => {
   }
 
   try {
-    // Get sender
+    // 1. Get sender's current balance
     const { data: sender, error: senderError } = await supabase
       .from('users1')
       .select('id, name, balance')
@@ -102,17 +99,17 @@ export const transfer = async (req, res) => {
       return res.status(404).json({ message: 'Sender not found' });
     }
 
-    // Check balance
+    // 2. Check sufficient balance
     if (sender.balance < amount) {
       return res.status(400).json({ message: 'Insufficient balance' });
     }
 
-    // Get receiver
+    // 3. Get receiver
     const { data: receiver, error: receiverError } = await supabase
       .from('users1')
       .select('id, name, balance')
       .eq('email', receiverEmail)
-      .maybeSingle();
+      .single();
 
     if (receiverError || !receiver) {
       return res.status(404).json({ message: 'Receiver not found. Check the email.' });
@@ -122,10 +119,10 @@ export const transfer = async (req, res) => {
       return res.status(400).json({ message: 'Cannot transfer to yourself' });
     }
 
-    const newSenderBalance = Number(sender.balance) - Number(amount);
-    const newReceiverBalance = Number(receiver.balance) + Number(amount);
+    const newSenderBalance = sender.balance - amount;
+    const newReceiverBalance = receiver.balance + amount;
 
-    // Deduct from sender
+    // 4. Deduct from sender
     const { error: deductError } = await supabase
       .from('users1')
       .update({ balance: newSenderBalance })
@@ -133,7 +130,7 @@ export const transfer = async (req, res) => {
 
     if (deductError) throw deductError;
 
-    // Add to receiver
+    // 5. Add to receiver
     const { error: addError } = await supabase
       .from('users1')
       .update({ balance: newReceiverBalance })
@@ -141,26 +138,26 @@ export const transfer = async (req, res) => {
 
     if (addError) throw addError;
 
-    // Insert DEBIT record for sender
+    // 6. Insert DEBIT record for sender
     const { error: debitError } = await supabase
       .from('transactions')
       .insert([{
         sender_id: senderId,
         receiver_id: receiver.id,
-        amount: Number(amount),
+        amount,
         transaction_type: 'debit',
         balance_after: newSenderBalance,
       }]);
 
     if (debitError) throw debitError;
 
-    // Insert CREDIT record for receiver
+    // 7. Insert CREDIT record for receiver
     const { error: creditError } = await supabase
       .from('transactions')
       .insert([{
         sender_id: senderId,
         receiver_id: receiver.id,
-        amount: Number(amount),
+        amount,
         transaction_type: 'credit',
         balance_after: newReceiverBalance,
       }]);
@@ -172,24 +169,22 @@ export const transfer = async (req, res) => {
       newBalance: newSenderBalance,
     });
   } catch (err) {
-    console.error('TRANSFER ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// GET /api/users
+// GET /api/users — search users to send money to
 export const getUsers = async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('users1')
       .select('id, name, email')
-      .neq('id', req.user.id);
+      .neq('id', req.user.id); // Exclude the logged-in user
 
     if (error) throw error;
 
     res.json(data);
   } catch (err) {
-    console.error('GET USERS ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
