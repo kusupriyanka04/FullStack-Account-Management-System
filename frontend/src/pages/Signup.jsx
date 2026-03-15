@@ -32,7 +32,7 @@ const Signup = () => {
     <div className="auth-container">
       <div className="auth-card">
         <h2>Create Account</h2>
-        <p className="auth-subtitle">Start with ₹10,000 balance</p>
+        {/* <p className="auth-subtitle">Start with ₹10,000 balance</p> */}
         {error && <div className="error-msg">{error}</div>}
         <form onSubmit={handleSubmit}>
           <div className="form-group">
