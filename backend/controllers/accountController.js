@@ -4,15 +4,19 @@ import supabase from '../config/supabaseClient.js';
 export const getBalance = async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('users1')
+      .from('users')
       .select('balance, name, email')
       .eq('id', req.user.id)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error('Balance fetch error:', error);
+      throw error;
+    }
 
     res.json(data);
   } catch (err) {
+    console.error('BALANCE ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
@@ -22,27 +26,57 @@ export const getStatement = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Fetch all transactions where user is sender OR receiver
+    // Step 1: Fetch transactions
     const { data: transactions, error } = await supabase
       .from('transactions')
-      .select(`
-        id,
-        amount,
-        transaction_type,
-        balance_after,
-        created_at,
-        sender_id,
-        receiver_id,
-        sender:users!transactions_sender_id_fkey(name, email),
-        receiver:users!transactions_receiver_id_fkey(name, email)
-      `)
+      .select('*')
       .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+      console.error('Transaction fetch error:', error);
+      throw error;
+    }
 
-    res.json(transactions);
+    if (!transactions || transactions.length === 0) {
+      return res.json([]);
+    }
+
+    // Step 2: Collect unique user IDs
+    const userIds = [
+      ...new Set([
+        ...transactions.map((t) => t.sender_id),
+        ...transactions.map((t) => t.receiver_id),
+      ]),
+    ];
+
+    // Step 3: Fetch user details
+    const { data: users, error: usersError } = await supabase
+      .from('users1')
+      .select('id, name, email')
+      .in('id', userIds);
+
+    if (usersError) {
+      console.error('Users fetch error:', usersError);
+      throw usersError;
+    }
+
+    // Step 4: Build lookup map
+    const userMap = {};
+    users.forEach((u) => {
+      userMap[u.id] = u;
+    });
+
+    // Step 5: Enrich transactions with sender/receiver names
+    const enriched = transactions.map((tx) => ({
+      ...tx,
+      sender: userMap[tx.sender_id] || null,
+      receiver: userMap[tx.receiver_id] || null,
+    }));
+
+    res.json(enriched);
   } catch (err) {
+    console.error('STATEMENT ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
@@ -57,7 +91,7 @@ export const transfer = async (req, res) => {
   }
 
   try {
-    // 1. Get sender's current balance
+    // Get sender
     const { data: sender, error: senderError } = await supabase
       .from('users1')
       .select('id, name, balance')
@@ -68,17 +102,17 @@ export const transfer = async (req, res) => {
       return res.status(404).json({ message: 'Sender not found' });
     }
 
-    // 2. Check sufficient balance
+    // Check balance
     if (sender.balance < amount) {
       return res.status(400).json({ message: 'Insufficient balance' });
     }
 
-    // 3. Get receiver
+    // Get receiver
     const { data: receiver, error: receiverError } = await supabase
       .from('users1')
       .select('id, name, balance')
       .eq('email', receiverEmail)
-      .single();
+      .maybeSingle();
 
     if (receiverError || !receiver) {
       return res.status(404).json({ message: 'Receiver not found. Check the email.' });
@@ -88,10 +122,10 @@ export const transfer = async (req, res) => {
       return res.status(400).json({ message: 'Cannot transfer to yourself' });
     }
 
-    const newSenderBalance = sender.balance - amount;
-    const newReceiverBalance = receiver.balance + amount;
+    const newSenderBalance = Number(sender.balance) - Number(amount);
+    const newReceiverBalance = Number(receiver.balance) + Number(amount);
 
-    // 4. Deduct from sender
+    // Deduct from sender
     const { error: deductError } = await supabase
       .from('users1')
       .update({ balance: newSenderBalance })
@@ -99,7 +133,7 @@ export const transfer = async (req, res) => {
 
     if (deductError) throw deductError;
 
-    // 5. Add to receiver
+    // Add to receiver
     const { error: addError } = await supabase
       .from('users1')
       .update({ balance: newReceiverBalance })
@@ -107,26 +141,26 @@ export const transfer = async (req, res) => {
 
     if (addError) throw addError;
 
-    // 6. Insert DEBIT record for sender
+    // Insert DEBIT record for sender
     const { error: debitError } = await supabase
       .from('transactions')
       .insert([{
         sender_id: senderId,
         receiver_id: receiver.id,
-        amount,
+        amount: Number(amount),
         transaction_type: 'debit',
         balance_after: newSenderBalance,
       }]);
 
     if (debitError) throw debitError;
 
-    // 7. Insert CREDIT record for receiver
+    // Insert CREDIT record for receiver
     const { error: creditError } = await supabase
       .from('transactions')
       .insert([{
         sender_id: senderId,
         receiver_id: receiver.id,
-        amount,
+        amount: Number(amount),
         transaction_type: 'credit',
         balance_after: newReceiverBalance,
       }]);
@@ -138,22 +172,24 @@ export const transfer = async (req, res) => {
       newBalance: newSenderBalance,
     });
   } catch (err) {
+    console.error('TRANSFER ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// GET /api/users — search users to send money to
+// GET /api/users
 export const getUsers = async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('users1')
       .select('id, name, email')
-      .neq('id', req.user.id); // Exclude the logged-in user
+      .neq('id', req.user.id);
 
     if (error) throw error;
 
     res.json(data);
   } catch (err) {
+    console.error('GET USERS ERROR:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
